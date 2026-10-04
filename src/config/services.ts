@@ -1,0 +1,1 @@
+export const BOOKING_SERVICE = 'BOOKING_SERVICE';
