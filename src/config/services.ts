@@ -1,1 +1,2 @@
 export const BOOKING_SERVICE = 'BOOKING_SERVICE';
+export const STRIPE_CLIENT = 'STRIPE_CLIENT';
