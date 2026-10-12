@@ -6,6 +6,7 @@ import Stripe from 'stripe';
 
 import { BOOKING_SERVICE, STRIPE_CLIENT } from '../config';
 import { Payment } from '../generated/prisma/client';
+import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BookingView } from './booking-view';
 import { CreatePaymentIntentDto } from './dto';
@@ -22,6 +23,7 @@ export class PaymentsService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly outbox: OutboxService,
     @Inject(BOOKING_SERVICE) private readonly bookingClient: ClientProxy,
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
   ) {}
@@ -126,9 +128,20 @@ export class PaymentsService {
       ),
     );
 
-    await this.prisma.payment.update({
-      where: { id: payment.id },
-      data: { status: 'refunded', failureReason: event.reason },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: { status: 'refunded', failureReason: event.reason },
+      });
+
+      await this.outbox.enqueue(tx, payment.id, 'payment.refunded', {
+        paymentId: payment.id,
+        bookingId: payment.bookingId,
+        userId: payment.userId,
+        amountCents: payment.amountCents,
+        currency: payment.currency,
+        reason: event.reason,
+      });
     });
 
     this.logger.warn(
