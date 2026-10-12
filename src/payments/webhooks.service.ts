@@ -4,9 +4,11 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { ClientProxy } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
 import Stripe from 'stripe';
 
-import { STRIPE_CLIENT, envs } from '../config';
+import { BOOKING_SERVICE, STRIPE_CLIENT, envs } from '../config';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { isDuplicateKey } from './payment-status';
@@ -18,6 +20,7 @@ export class WebhooksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
+    @Inject(BOOKING_SERVICE) private readonly bookingClient: ClientProxy,
     @Inject(STRIPE_CLIENT) private readonly stripe: Stripe,
   ) {}
 
@@ -33,6 +36,9 @@ export class WebhooksService {
           break;
         case 'payment_intent.payment_failed':
           await this.onFailed(event, event.data.object);
+          break;
+        case 'payment_intent.requires_action':
+          await this.onRequiresAction(event, event.data.object);
           break;
         case 'charge.succeeded':
           await this.onCharge(event, event.data.object);
@@ -115,13 +121,50 @@ export class WebhooksService {
     await this.prisma.$transaction(async (tx) => {
       await tx.stripeEvent.create({ data: this.eventRow(event) });
 
-      await tx.payment.update({
-        where: { id: payment.id },
-        data: { failureReason: reason },
+      await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: { in: ['pending', 'requires_action'] },
+        },
+        data: { status: 'pending', failureReason: reason },
       });
     });
 
     this.logger.warn(`Payment ${payment.id} failed: ${reason}`);
+  }
+
+  private async onRequiresAction(
+    event: Stripe.Event,
+    intent: Stripe.PaymentIntent,
+  ) {
+    const payment = await this.find(event, intent.id);
+
+    if (!payment) {
+      return;
+    }
+
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      await tx.stripeEvent.create({ data: this.eventRow(event) });
+
+      const result = await tx.payment.updateMany({
+        where: { id: payment.id, status: 'pending' },
+        data: { status: 'requires_action' },
+      });
+
+      return result.count > 0;
+    });
+
+    if (!claimed) {
+      this.logger.log(
+        `Payment ${payment.id} is ${payment.status}, ignoring the challenge`,
+      );
+
+      return;
+    }
+
+    await this.extendHold(payment.bookingId, payment.userId);
+
+    this.logger.log(`Payment ${payment.id} is being authenticated`);
   }
 
   private async onCharge(event: Stripe.Event, charge: Stripe.Charge) {
@@ -156,6 +199,21 @@ export class WebhooksService {
         },
       });
     });
+  }
+
+  private async extendHold(bookingId: string, userId: string) {
+    try {
+      await firstValueFrom(
+        this.bookingClient.send('booking.hold.extend', {
+          id: bookingId,
+          userId,
+        }),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not extend the hold on ${bookingId}: ${String(error)}`,
+      );
+    }
   }
 
   private async find(event: Stripe.Event, intentId: string) {

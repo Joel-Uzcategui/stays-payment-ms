@@ -8,6 +8,7 @@ interface EnvVars {
   RABBITMQ_QUEUE: string;
   BOOKING_QUEUE: string;
   ABANDON_AFTER_MINUTES: number;
+  AUTHENTICATION_WINDOW_MINUTES: number;
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
 }
@@ -20,6 +21,7 @@ const envsSchema = joi
     RABBITMQ_QUEUE: joi.string().required(),
     BOOKING_QUEUE: joi.string().required(),
     ABANDON_AFTER_MINUTES: joi.number().integer().min(1).default(30),
+    AUTHENTICATION_WINDOW_MINUTES: joi.number().integer().min(1).default(60),
     STRIPE_SECRET_KEY: joi.string().required(),
     STRIPE_WEBHOOK_SECRET: joi.string().required(),
   })
@@ -43,6 +45,7 @@ export const envs = {
   rabbitmqQueue: envVars.RABBITMQ_QUEUE,
   bookingQueue: envVars.BOOKING_QUEUE,
   abandonAfterMinutes: envVars.ABANDON_AFTER_MINUTES,
+  authenticationWindowMinutes: envVars.AUTHENTICATION_WINDOW_MINUTES,
   stripeSecretKey: envVars.STRIPE_SECRET_KEY,
   stripeWebhookSecret: envVars.STRIPE_WEBHOOK_SECRET,
 };

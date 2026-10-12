@@ -4,12 +4,12 @@ import Stripe from 'stripe';
 
 import { STRIPE_CLIENT, envs } from '../config';
 import { PrismaService } from '../prisma/prisma.service';
-import { ACTIVE_STATUSES } from './payment-status';
 import { WebhooksService } from './webhooks.service';
 
 const EVENT_TYPES = [
   'payment_intent.succeeded',
   'payment_intent.payment_failed',
+  'payment_intent.requires_action',
   'charge.succeeded',
 ];
 
@@ -93,13 +93,18 @@ export class ReconciliationService {
   }
 
   private async cancelAbandoned() {
-    const before = new Date(Date.now() - envs.abandonAfterMinutes * 60_000);
+    const abandoned = new Date(Date.now() - envs.abandonAfterMinutes * 60_000);
+    const unauthenticated = new Date(
+      Date.now() - envs.authenticationWindowMinutes * 60_000,
+    );
 
     const stale = await this.prisma.payment.findMany({
       where: {
-        status: { in: ACTIVE_STATUSES.filter((it) => it !== 'succeeded') },
-        createdAt: { lt: before },
         stripePaymentIntentId: { not: null },
+        OR: [
+          { status: 'pending', createdAt: { lt: abandoned } },
+          { status: 'requires_action', updatedAt: { lt: unauthenticated } },
+        ],
       },
       orderBy: { createdAt: 'asc' },
       take: CANCEL_BATCH,
@@ -126,7 +131,13 @@ export class ReconciliationService {
 
       await this.prisma.payment.update({
         where: { id: payment.id },
-        data: { status: 'cancelled', failureReason: 'abandoned' },
+        data: {
+          status: 'cancelled',
+          failureReason:
+            payment.status === 'requires_action'
+              ? 'authentication abandoned'
+              : 'abandoned',
+        },
       });
 
       cancelled += 1;
